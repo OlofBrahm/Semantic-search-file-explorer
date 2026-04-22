@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+		  <PackageReference Include="AlphaFS" Version="2.2.6" />
 		  <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
 		  <PackageReference Include="Microsoft.ML" Version="5.0.0" />
 		  <PackageReference Include="Microsoft.ML.DataView" Version="5.0.0" />
@@ -21,6 +22,10 @@
 		<None Include="MLModels\**\*.*">
 			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
 		</None>
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Folder Include="FileSystemScan\" />
 	</ItemGroup>
 
 </Project>

@@ -4,7 +4,9 @@ using VectorDataBase.Interfaces;
 using VectorDataBase.Models;
 using VectorDataBase.Utils;
 using VectorDataBase.Indices;
-using SimiliVec_Explorer.DocumentStore;
+using SimiliVec_Explorer.DocumentStorer;
+using SimiliVec_Explorer.Services;
+using System.Data.SqlTypes;
 
 namespace VectorDataBase.Services
 {
@@ -12,14 +14,23 @@ namespace VectorDataBase.Services
     {
         public readonly HnswIndexV3 _dataIndex;
         private readonly IEmbeddingModel _embeddingModel;
-        private readonly DocumentStore _documentStore;
         private int _nextId = 0;
+        private DocumentStore _documentStore;
+        private readonly StartupService _startupService;
+        private string _rootPath = @"C:\Users\olleb\Documents";
 
         public VectorService(HnswIndexV3 dataIndex, IEmbeddingModel embeddingModel)
         {
             _dataIndex = dataIndex;
             _embeddingModel = embeddingModel;
             _documentStore = new DocumentStore();
+            _startupService = new StartupService(_documentStore, dataIndex);
+
+        }
+
+        public async Task Initialize()
+        {
+           await _startupService.InitializeAsync(_rootPath);
         }
 
         public void AddDocument(string documentText, int documentId)

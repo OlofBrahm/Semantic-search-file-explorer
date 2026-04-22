@@ -5,7 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using VectorDataBase.Models;
 
-namespace SimiliVec_Explorer.DocumentStore
+namespace SimiliVec_Explorer.DocumentStorer
 {
     public class DocumentStore
     {
@@ -39,14 +39,14 @@ namespace SimiliVec_Explorer.DocumentStore
             return results;
         }
 
-        public void AddDocument(int id, string content)
+        public void AddDocument(int id, string filePath)
         {
             try
             {
                 _documentStore[id] = new DocumentModel
                 {
-                    Id = id.ToString(),
-                    Content = content //this will get replaced with the file path to the corresponding file on the computer
+                    Id = id,
+                    FilePath = filePath 
                 };
             }
             catch (Exception ex)
