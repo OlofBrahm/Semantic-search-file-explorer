@@ -16,16 +16,17 @@
 		  <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.2" />
 		  <PackageReference Include="Microsoft.ML.OnnxTransformer" Version="5.0.0" />
 		  <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
+	      <PackageReference Include="System.Security.Permissions" Version="7.0.0" />
   </ItemGroup>
 
 	<ItemGroup>
-		<None Include="MLModels\**\*.*">
-			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
-		</None>
+	  <Folder Include="FileSystemScan\" />
 	</ItemGroup>
 
 	<ItemGroup>
-	  <Folder Include="FileSystemScan\" />
+	  <Content Include="MLModels\e5-small-v2\**\*">
+	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	  </Content>
 	</ItemGroup>
 
 </Project>

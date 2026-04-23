@@ -18,12 +18,17 @@ namespace SimiliVec_Explorer
             }, new EmbeddingModel());
 
             await vectorService.Initialize();
-            var results = vectorService.Search("This is a test file", 5);
-            Console.WriteLine(results.Count);
-
-            foreach (var result in results)
+            while (true)
             {
-                Console.WriteLine($" :::::::: Found document with ID: {result.Id} ::::::::: Content: {result.FilePath}");
+                Console.WriteLine("Add search query: ");
+                string? userInput = Console.ReadLine();
+                var results = vectorService.Search(userInput!, 5);
+                Console.WriteLine(results.Count);
+
+                foreach (var result in results)
+                {
+                    Console.WriteLine($" :::::::: Found document with ID: {result.Id} ::::::::: Content: {result.FilePath}");
+                }
             }
         }
     }

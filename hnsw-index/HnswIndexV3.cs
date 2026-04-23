@@ -43,7 +43,12 @@ public sealed class HnswIndexV3
         _levelOffsetsPool = Array.Empty<int>();
         _levelCountsPool = Array.Empty<int>();
     }
-
+    /// <summary>
+    /// TODO: remake into flat array, and return document ids directly from search instead of node ids. This way we can skip the final loop and reduce allocations.
+    /// </summary>
+    /// <param name="queryEmbedding"></param>
+    /// <param name="k"></param>
+    /// <returns></returns>
     public List<int> GetOriginalDocumentIds(float[] queryEmbedding, int k)
     {
         var nodeIds = FindNearestUniqueDocs(queryEmbedding, k);
@@ -112,6 +117,11 @@ public sealed class HnswIndexV3
     /// <summary>
     /// Searches for K unique documents. If a single document dominates the top results, 
     /// the search depth (ef) expands to find other files.
+    /// TODO: This can be optimized by returning document ids directly from SearchLayer and skipping the final loop, but it requires refactoring the neighbor selection to work with doc ids instead of node ids.
+    /// TODO: Is there a way to reverse engineer the vector so that we can return what in the original document was the closest match, instead of just the document id? This would be a game changer for interpretability and user experience, 
+    /// as we could highlight the relevant text in the original file. It might be possible to store some kind of "centroid" vector for each document that represents the most typical chunk, and return that along with the document id. 
+    /// Or we could try to reconstruct a pseudo-vector from the neighbors and use that for better results. This is a complex problem but would be a huge improvement if solved. 
+    /// If we could find a index span of chars and return that and then extract the substring from the original text.
     /// </summary>
     public List<int> FindNearestUniqueDocs(float[] queryVector, int k, int? efSearch = null)
     {
