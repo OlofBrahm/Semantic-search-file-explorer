@@ -1,209 +1,209 @@
 ﻿using Alphaleonis.Win32.Filesystem;
-using Google.Protobuf;
 using SimiliVec_Explorer.DocumentStorer;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Linq.Expressions;
-using System.Reflection.Metadata;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using VectorDataBase.Indices;
 using VectorDataBase.Interfaces;
-using DirectoryEnumerationOptions = Alphaleonis.Win32.Filesystem.DirectoryEnumerationOptions;
-using File = Alphaleonis.Win32.Filesystem.File;
+using System.Linq;
 
-/// <summary>
-/// TODO: We need to make it faster and cheaper to run. We should multithread the embedding, just need to handle thread safety on the index and document store. 
-/// We should also consider batching the embedding calls to the model, as it can be more efficient to embed multiple documents at once.
-/// </summary>
 public class SemanticIndexerService
 {
-
-
-    private readonly HashSet<string> _supportedExts = new() { ".log", ".txt", ".md" };
     private readonly IEmbeddingModel _model;
     private readonly HnswIndexV3 _index;
+    private readonly DocumentStore _documentStore;
+    private readonly object _indexLock = new();
     private int idGenerator = 0;
-    private Random _random;
-    private DocumentStore _documentStore;
+    private readonly Random _random = new Random();
+
+    // Priority extensions for "immediate" indexing
+    private static readonly HashSet<string> HighPriorityExtensions = new(StringComparer.OrdinalIgnoreCase)
+    { ".md", ".txt", ".docx" };
+
+    private static readonly HashSet<string> SearchableExtensions = new(StringComparer.OrdinalIgnoreCase)
+    { ".txt", ".md", ".docx", ".html", ".json", ".py", ".cs", ".xml" };
+
     public SemanticIndexerService(IEmbeddingModel model, HnswIndexV3 index, DocumentStore documentStore)
     {
         _model = model;
         _index = index;
-        _random = new Random();
         _documentStore = documentStore;
     }
 
     public async Task RunFullIndexAsync(string rootPath)
     {
+        using var pathQueue = new BlockingCollection<string>(50000);
+        using var contentQueue = new BlockingCollection<FileContent>(1000);
 
-        using var pathQueue = new BlockingCollection<string>(1000);
-        using var contentQueue = new BlockingCollection<FileContent>(100);
+        var totalWatch = Stopwatch.StartNew();
+        Console.WriteLine("Starting Rapid Discovery...");
 
+        // 1. FAST DISCOVERY: Get all paths and prioritize them
+        var discoveryTask = Task.Run(() => {
+            var sw = Stopwatch.StartNew();
+            DiscoverFilesFast(rootPath, pathQueue);
+            sw.Stop();
+            Console.WriteLine($"[Timing] DiscoverFilesFast took {sw.Elapsed.TotalMilliseconds} ms");
+        });
 
-        var discoveryTask = Task.Run(() => DiscoverFiles(rootPath, pathQueue));
+        // 2. PARALLEL EXTRACTION: Multiple threads reading file contents
+        var extractionTask = Task.Run(() => {
+            var sw = Stopwatch.StartNew();
+            ParallelExtractContent(pathQueue, contentQueue);
+            sw.Stop();
+            Console.WriteLine($"[Timing] ParallelExtractContent took {sw.Elapsed.TotalMilliseconds} ms");
+        });
 
-        var extractionTask = Task.Run(() => ExtractContent(pathQueue, contentQueue));
-
-        await Task.Run(() => ProcessEmbeddings(contentQueue));
+        // 3. GPU PROCESSING: Consumer
+        var gpuWatch = Stopwatch.StartNew();
+        await ProcessEmbeddingsOnGpu(contentQueue);
+        gpuWatch.Stop();
+        Console.WriteLine($"[Timing] ProcessEmbeddingsOnGpu took {gpuWatch.Elapsed.TotalMilliseconds} ms");
 
         await Task.WhenAll(discoveryTask, extractionTask);
-        Console.WriteLine("Indexing Complete.");
+        totalWatch.Stop();
+        Console.WriteLine($"Full Indexing Complete in {totalWatch.Elapsed.TotalSeconds}s. Nodes: {_index.NodeCount}");
     }
 
-    private void DiscoverFiles(string root, BlockingCollection<string> output)
+    private void DiscoverFilesFast(string root, BlockingCollection<string> output)
     {
+        var sw = Stopwatch.StartNew();
         try
         {
+            // Commercial Strategy: Get metadata first to allow sorting by Recency
+            // Using AlphaLeonis to get FileSystemEntryInfo objects (much faster than File.GetFiles)
             var options = DirectoryEnumerationOptions.Recursive |
                           DirectoryEnumerationOptions.ContinueOnException |
-                          DirectoryEnumerationOptions.SkipReparsePoints;
+                          DirectoryEnumerationOptions.BasicSearch;
 
-            var entries = Alphaleonis.Win32.Filesystem.Directory.EnumerateFileSystemEntryInfos<FileSystemEntryInfo>(
-                root,
-                "*.*",
-                options
-            );
+            var allEntries = Alphaleonis.Win32.Filesystem.Directory.EnumerateFileSystemEntryInfos<FileSystemEntryInfo>(root, "*.*", options)
+                .Where(e => !e.IsDirectory && IsSupported(e.LongFullPath))
+                .OrderByDescending(e => e.LastWriteTime) // INDEX RECENT FILES FIRST
+                .ToList();
 
-            foreach (var entry in entries)
+            Console.WriteLine($"Discovery finished. Found {allEntries.Count} candidate files.");
+
+            foreach (var entry in allEntries)
             {
-
-                if (!entry.IsDirectory && IsSupported(entry.LongFullPath))
-                {
-                    // This call will BLOCK if the queue is full (Backpressure)
-                    output.Add(entry.LongFullPath);
-                    Console.WriteLine("Found files counter: " + output.Count());
-                }
+                output.Add(entry.LongFullPath);
             }
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            // This happens if the 'root' itself is forbidden
-            Debug.WriteLine($"Access denied to root path: {ex.Message}");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Discovery failed: {ex.Message}");
-            Console.WriteLine($"Discovery failed: {ex.Message}");
+            Console.WriteLine($"Discovery Error: {ex.Message}");
         }
         finally
         {
             output.CompleteAdding();
+            sw.Stop();
+            Console.WriteLine($"[Timing] DiscoverFilesFast (internal) took {sw.Elapsed.TotalMilliseconds} ms");
         }
     }
 
-    private void ExtractContent(BlockingCollection<string> input, BlockingCollection<FileContent> output)
+    private void ParallelExtractContent(BlockingCollection<string> input, BlockingCollection<FileContent> output)
     {
-        try
+        var sw = Stopwatch.StartNew();
+        // Use 4-8 threads for extraction to saturate Disk IO while GPU works
+        Parallel.ForEach(input.GetConsumingEnumerable(), new ParallelOptions { MaxDegreeOfParallelism = 8 }, path =>
         {
-            foreach (var path in input.GetConsumingEnumerable())
+            var swItem = Stopwatch.StartNew();
+            try
             {
-                try
-                {
-                    using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    using (var reader = new StreamReader(stream))
-                    {
-                        string content = reader.ReadToEnd();
-                        string trimmed = content.Trim();
-                        if(string.IsNullOrWhiteSpace(trimmed) || trimmed.Length == 0 || trimmed == "{}" || trimmed == "[]")
-                        {
-                            Console.WriteLine($"Skipping empty file: {path}");
-                            continue;
-                        }
-                        if (IsBinaryContent(content))
-                        {
-                            Console.WriteLine($"Skipping likely binary file: {path}");
-                            continue;
-                        }
-                        FileContent fileContent = new FileContent
-                        {
-                            Id = Interlocked.Increment(ref idGenerator),
-                            Content = content
-                        };
-                        output.Add(fileContent);
-                        Console.WriteLine("Extracted content counter: " + output.Count());
-                        _documentStore.AddDocument(fileContent.Id, path);
-                    }
-                }
-                catch (IOException ex)
-                {
-                    Console.WriteLine($"IO error while reading file: {ex.Message}");
-                }
+                // Commercial Logic: Don't read huge files entirely to start
+                var fileInfo = new System.IO.FileInfo(path);
+                if (fileInfo.Length > 10 * 1024 * 1024) return; // Skip files > 10MB for first-pass
+
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream);
+
+                string content = reader.ReadToEnd();
+                if (string.IsNullOrWhiteSpace(content) || IsBinaryContent(content)) return;
+
+                int id = Interlocked.Increment(ref idGenerator);
+                _documentStore.AddDocument(id, path);
+
+                output.Add(new FileContent { Id = id, Content = content });
             }
-        }
-        catch(Exception ex)
-        {
-            Console.WriteLine($"Content extraction failed: {ex.Message}");
-            Debug.WriteLine($"Content extraction failed: {ex.Message}");
-        }
-        finally { output.CompleteAdding(); }
+            catch (Exception ex) { Console.WriteLine($"Error processing file: {ex.Message}"); }
+            finally { swItem.Stop(); }
+        });
+
+        output.CompleteAdding();
+        sw.Stop();
+        Console.WriteLine($"[Timing] ParallelExtractContent (internal) took {sw.Elapsed.TotalMilliseconds} ms");
     }
-    private string temp = string.Empty;
-    private void ProcessEmbeddings(BlockingCollection<FileContent> input)
+
+    private async Task ProcessEmbeddingsOnGpu(BlockingCollection<FileContent> input)
     {
-        try
+        const int GPU_BATCH_SIZE = 128;
+        var gpuModel = _model.Factory();
+        var localBatch = new List<FileContent>(GPU_BATCH_SIZE);
+
+        await Task.Run(() =>
         {
+            Stopwatch sw = Stopwatch.StartNew();
             foreach (var document in input.GetConsumingEnumerable())
             {
+                var swDoc = Stopwatch.StartNew();
                 document.Content = SanitizeUnicode(document.Content);
-                temp = document.Content;
-                var vector = _model.GetEmbeddings(document.Content);
-                Console.WriteLine("Generated embedding for Document ID: " + document.Id);
-                _index.Insert(vector, document.Id, _random);
-                Console.WriteLine("Indexed Document ID: " + document.Id);
+                localBatch.Add(document);
+
+                if (localBatch.Count == GPU_BATCH_SIZE)
+                {
+                    RunBatchToIndex(localBatch, gpuModel);
+                    localBatch.Clear();
+                }
+            }
+
+            if (localBatch.Count > 0)
+            {
+                var swBatch = Stopwatch.StartNew();
+                RunBatchToIndex(localBatch, gpuModel);
+                Console.WriteLine($"Processed final GPU Batch of {localBatch.Count}");
+            }
+            Console.WriteLine($"[Timing] ProcessEmbeddingsOnGpu (internal) total GPU processing time: {sw.Elapsed.TotalMilliseconds} ms");
+        });
+    }
+
+    private void RunBatchToIndex(List<FileContent> batch, IEmbeddingModel model)
+    {
+        var sw = Stopwatch.StartNew();
+        string[] texts = batch.Select(b => b.Content).ToArray();
+        float[][] vectors = model.GetEmbeddings(texts, isQuery: false);
+        Console.WriteLine($"Generated embeddings for batch of {batch.Count} documents in {sw.Elapsed.TotalMilliseconds} ms");
+
+        lock (_indexLock)
+        {
+            for (int i = 0; i < batch.Count; i++)
+            {
+                _index.Insert(vectors[i], batch[i].Id, _random);
             }
         }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Embedding processing failed: {ex.Message}");
-            Console.WriteLine($"Embedding processing failed: {ex.Message}");
-            Console.WriteLine($"Failed document string: {temp}");
-
-        }
+        sw.Stop();
+        Console.WriteLine($"[Timing] RunBatchToIndex for {batch.Count} docs took {sw.Elapsed.TotalMilliseconds} ms");
     }
 
-    private static readonly HashSet<string> SearchableExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ".txt", ".md", ".docx", ".html", ".log", ".json", ".py", ".cs", ".err", ".out", ".conf", ".cfg", ".json", ".xml", "dll"
-        };
-
-    private bool IsSupported(string path)
-    {
-        string ext = Alphaleonis.Win32.Filesystem.Path.GetExtension(path);
-
-        return !string.IsNullOrEmpty(ext) && SearchableExtensions.Contains(ext);
-    }
+    private bool IsSupported(string path) => SearchableExtensions.Contains(Alphaleonis.Win32.Filesystem.Path.GetExtension(path));
 
     private string SanitizeUnicode(string input)
     {
-        var encoderSettings = new EncoderReplacementFallback("�");
-        var decoderSettings = new DecoderReplacementFallback("�");
         try
         {
-            var encoding = Encoding.GetEncoding(Encoding.UTF8.CodePage, encoderSettings, decoderSettings);
-            byte[] bytes = encoding.GetBytes(input);
-            return encoding.GetString(bytes);
-        }catch(Exception ex)
-        {
-            Console.WriteLine($"Unicode sanitization failed: {ex.Message}");
-            Console.WriteLine($"Broken file string: {input}");
-            Debug.WriteLine($"Unicode sanitization failed: {ex.Message}");
-            return input;
+            var encoding = Encoding.GetEncoding(Encoding.UTF8.CodePage, new EncoderReplacementFallback(""), new DecoderReplacementFallback(""));
+            return encoding.GetString(encoding.GetBytes(input));
         }
-
+        catch { return input; }
     }
 
     private bool IsBinaryContent(string content)
     {
-        // If more than 10% of the characters are non-printable, consider it binary
         int nonPrintable = content.Count(c => char.IsControl(c) && c != '\r' && c != '\n' && c != '\t');
-        double ratio = (double)nonPrintable / Math.Max(content.Length, 1);
-        return ratio > 0.1;
+        return (double)nonPrintable / Math.Max(content.Length, 1) > 0.1;
     }
 }
 
 public class FileContent
 {
     public int Id { get; set; }
-    public string Content { get; set; } = string.Empty;
+    public string Content { get; set; }
 }

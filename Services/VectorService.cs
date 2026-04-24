@@ -17,7 +17,7 @@ namespace VectorDataBase.Services
         private int _nextId = 0;
         private DocumentStore _documentStore;
         private readonly StartupService _startupService;
-        private string _rootPath = @"C:\Users\olleb\Documents";
+        private string _rootPath = @"C:\Users\olleb\";
 
         public VectorService(HnswIndexV3 dataIndex, IEmbeddingModel embeddingModel)
         {
@@ -33,24 +33,13 @@ namespace VectorDataBase.Services
            await _startupService.InitializeAsync(_rootPath);
         }
 
-        public void AddDocument(string documentText, int documentId)
-        {
-            var chunks = SimpleTextChunker.Chunk(documentText);
-            foreach (var chunk in chunks)
-            {
-                var embedding = _embeddingModel.GetEmbeddings(chunk);
-                _dataIndex.Insert(embedding, documentId, new Random());
-                _nextId++;
-            }
 
-            _documentStore.AddDocument(documentId, documentText);
-        }
-
-        public List<DocumentModel> Search(string query, int k)
+        public List<DocumentModel> Search(string[] query, int k)
         {
             Console.WriteLine($"Current node count in index: {_dataIndex.NodeCount}");
             var queryEmbedding = _embeddingModel.GetEmbeddings(query, isQuery: true);
-            var documentIds = _dataIndex.GetOriginalDocumentIds(queryEmbedding, k);
+            float[] primaryQueryVector = queryEmbedding[0];
+            var documentIds = _dataIndex.GetOriginalDocumentIds(primaryQueryVector, k);
             return _documentStore.GetDocumentByids(documentIds);
         }
     }

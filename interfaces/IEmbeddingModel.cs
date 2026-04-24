@@ -1,4 +1,6 @@
-﻿namespace VectorDataBase.Interfaces;
+﻿using VectorDataBase.Embedding;
+
+namespace VectorDataBase.Interfaces;
 
 public interface IEmbeddingModel
 {
@@ -7,6 +9,12 @@ public interface IEmbeddingModel
     /// </summary>
     /// <param name="text"></param>
     /// <returns></returns>
-    float[] GetEmbeddings(string text, bool isQuery = true);
+    float[][] GetEmbeddings(string[] text, bool isQuery);
+
+    /// <summary>
+    /// Creates a new instance of the embedding model
+    /// </summary>
+    /// <returns></returns>
+    EmbeddingModel Factory();
 
 }

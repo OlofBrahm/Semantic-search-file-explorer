@@ -1,45 +1,91 @@
 ﻿using Microsoft.ML.Tokenizers;
-using System;
-using System.Linq;
-namespace VectorDataBase.Embedding;
 
-/// <summary>
-/// Tokenizer for E5-Small-V2 model
-/// </summary>
 public class E5SmallTokenizer
 {
     private readonly BertTokenizer _tokenizer;
-
-    private const string RelativeVocabPath = "MLModels/e5-small-v2/vocab.txt";
-    private string _vocabPath => System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RelativeVocabPath);
     private const int MAX_SEQUENCE_LENGTH = 512;
 
-    public E5SmallTokenizer()
+    public E5SmallTokenizer(string vocabPath)
     {
-        _tokenizer = BertTokenizer.Create(vocabFilePath: _vocabPath);
+        _tokenizer = BertTokenizer.Create(vocabFilePath: vocabPath);
     }
 
-    /// <summary>
-    /// Encode input text to token IDs, token type IDs, and attention mask
-    /// </summary>
-    /// <param name="text"></param>
-    /// <returns></returns>
-    public (long[] inputIds, long[] TokenTypeIds, long[] AttentionMask) Encode(string text, bool isQuery = true)
+    public (long[] inputIds, long[] tokenTypeIds, long[] attentionMasks, int batchMaxLen) EncodeBatchFlat(string[] texts, bool isQuery)
     {
-        var ids = _tokenizer.EncodeToIds(text, true, true)
-        .Select(id => (long)id)
-        .ToList();
+        int count = texts.Length;
+        var rawIdsBatch = new IReadOnlyList<int>[count];
+        int batchMaxLen = 0;
 
-        if (ids.Count > MAX_SEQUENCE_LENGTH)
+        // Pre-calculate prefix IDs once for the whole batch
+        string prefixStr = isQuery ? "query: " : "passage: ";
+        var prefixIds = _tokenizer.EncodeToIds(prefixStr);
+
+        // Pass 1: Parallel Tokenization
+        Parallel.For(0, count, i =>
         {
-            ids = ids.Take(MAX_SEQUENCE_LENGTH).ToList();
-        }
+            var raw = _tokenizer.EncodeToIds(texts[i] ?? string.Empty);
+            rawIdsBatch[i] = raw;
 
-        long[] inputIds = ids.ToArray();
-        long[] attentionMask = Enumerable.Repeat(1L, inputIds.Length).ToArray();
-        long[] tokenTypeIds = new long[inputIds.Length];
+            // Total = CLS (1) + Prefix + Text + SEP (1)
+            int totalLen = 1 + prefixIds.Count + raw.Count + 1;
+            int cappedLen = Math.Min(totalLen, MAX_SEQUENCE_LENGTH);
 
-        return (inputIds, tokenTypeIds, attentionMask);
+            int initialMax;
+            do
+            {
+                initialMax = batchMaxLen;
+                if (initialMax >= cappedLen) break;
+            } while (Interlocked.CompareExchange(ref batchMaxLen, cappedLen, initialMax) != initialMax);
+        });
+
+        long[] flatIds = new long[count * batchMaxLen];
+        long[] flatMask = new long[count * batchMaxLen];
+        long[] flatTypes = new long[count * batchMaxLen];
+
+        // Pass 3: Fill arrays without ever creating "prefix + text" strings
+        Parallel.For(0, count, i =>
+        {
+            var rawTextIds = rawIdsBatch[i];
+            int rowOffset = i * batchMaxLen;
+            int currentPos = rowOffset;
+
+            // 1. CLS
+            if (currentPos - rowOffset < batchMaxLen)
+            {
+                flatIds[currentPos] = 101L;
+                flatMask[currentPos] = 1L;
+                currentPos++;
+            }
+
+            // 2. Prefix IDs
+            foreach (var pId in prefixIds)
+            {
+                if (currentPos - rowOffset >= batchMaxLen)
+                    break;
+                flatIds[currentPos] = (long)pId;
+                flatMask[currentPos] = 1L;
+                currentPos++;
+            }
+
+            // 3. Text IDs
+            foreach (var tId in rawTextIds)
+            {
+                if (currentPos - rowOffset >= batchMaxLen)
+                    break;
+                flatIds[currentPos] = (long)tId;
+                flatMask[currentPos] = 1L;
+                currentPos++;
+            }
+
+            // 4. SEP
+            if (currentPos - rowOffset < batchMaxLen)
+            {
+                flatIds[currentPos] = 102L;
+                flatMask[currentPos] = 1L;
+                currentPos++;
+            }
+        });
+
+        return (flatIds, flatTypes, flatMask, batchMaxLen);
     }
-
 }

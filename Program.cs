@@ -21,8 +21,8 @@ namespace SimiliVec_Explorer
             while (true)
             {
                 Console.WriteLine("Add search query: ");
-                string? userInput = Console.ReadLine();
-                var results = vectorService.Search(userInput!, 5);
+                string[] userInput = Console.ReadLine()?.Split(' ') ?? Array.Empty<string>();
+                var results = vectorService.Search(userInput, 5);
                 Console.WriteLine(results.Count);
 
                 foreach (var result in results)
