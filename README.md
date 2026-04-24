@@ -1,5 +1,7 @@
 # Semantic Search File Explorer
 
+USE AT YOUR OWN RISK
+
 **Semantic Search File Explorer** is a .NET 8.0 console application that performs semantic (vector-based) search on documents within a filesystem directory. It leverages vector embeddings and the HNSW (Hierarchical Navigable Small World) index to efficiently find and retrieve text documents relevant to a user's query—even if those documents don't contain exact keyword matches.
 
 ## Features
