@@ -171,7 +171,7 @@ public class SemanticIndexerService
         string[] texts = batch.Select(b => b.Content).ToArray();
         float[][] vectors = model.GetEmbeddings(texts, isQuery: false);
         Console.WriteLine($"Generated embeddings for batch of {batch.Count} documents in {sw.Elapsed.TotalMilliseconds} ms");
-
+        sw.Restart();
         lock (_indexLock)
         {
             for (int i = 0; i < batch.Count; i++)
@@ -179,8 +179,9 @@ public class SemanticIndexerService
                 _index.Insert(vectors[i], batch[i].Id, _random);
             }
         }
-        sw.Stop();
+        
         Console.WriteLine($"[Timing] RunBatchToIndex for {batch.Count} docs took {sw.Elapsed.TotalMilliseconds} ms");
+        sw.Stop();
     }
 
     private bool IsSupported(string path) => SearchableExtensions.Contains(Alphaleonis.Win32.Filesystem.Path.GetExtension(path));

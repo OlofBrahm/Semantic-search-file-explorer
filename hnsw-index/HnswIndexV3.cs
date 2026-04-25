@@ -407,6 +407,7 @@ public sealed class HnswIndexV3
     }
 
     private float[] GetVector(HnswNodeV3 node) => GetVector(node.Id);
+    //private ReadOnlySpan<float> GetVectorSpan(int nodeId) => _vectorPool.AsSpan(_nodes[nodeId].VectorOffset, _vectorDim);
     private float[] GetVector(int nodeId)
     {
         var v = new float[_vectorDim];

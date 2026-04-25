@@ -17,7 +17,7 @@ namespace VectorDataBase.Services
         private int _nextId = 0;
         private DocumentStore _documentStore;
         private readonly StartupService _startupService;
-        private string _rootPath = @"C:\Users\olleb\Documents\test_bulk ";
+        private string _rootPath = @"C:\Users\olleb\";
 
         public VectorService(HnswIndexV3 dataIndex, IEmbeddingModel embeddingModel)
         {
