@@ -13,10 +13,6 @@ USE AT YOUR OWN RISK
 - **Console Interface**: Simple interactive prompt for entering queries and viewing results.
 
 ## TODOs & Ideas
-- Solve extreme initial load time
-- Reduce 'Chunk' size to less than 256 tokens to increase embedding speed.
+- Keyword support for the hit rankings, required for shorter file lengths.
 - Display what chunk of the file is the hit. Preview button.
-- Add batching for embedding (performance improvement)
-- Support for multi-threaded indexing
 - Cross-platform support
-- Index substring spans for highlighting exact match context
