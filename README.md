@@ -10,13 +10,9 @@ USE AT YOUR OWN RISK
 - **File System Indexing**: Recursively scans a user-specified directory, indexing a wide variety of text-based documents.
 - **Supported File Types**: Out-of-the-box support for `.txt`, `.md`, `.log`, `.json`, `.cs`, `.py`, `.html`, `.xml`, `.docx`, and others.
 - **Efficient Nearest Neighbor Search**: Uses a custom HNSW (Hierarchical Navigable Small World) index for fast approximate nearest neighbor searches.
-- **Console Interface**: Simple interactive prompt for entering queries and viewing results.
 
 ## TODOs & Ideas
-- Solve extreme initial load time
-- Reduce 'Chunk' size to less than 256 tokens to increase embedding speed.
+- Keyword support for the hit rankings, required for shorter file lengths.
 - Display what chunk of the file is the hit. Preview button.
-- Add batching for embedding (performance improvement)
-- Support for multi-threaded indexing
 - Cross-platform support
-- Index substring spans for highlighting exact match context
+- Trying to minimize GC calls, using array pools and reuse already allocated memory.
