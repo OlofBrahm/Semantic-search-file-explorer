@@ -3,7 +3,7 @@
 public class E5SmallTokenizer
 {
     private readonly BertTokenizer _tokenizer;
-    private const int MAX_SEQUENCE_LENGTH = 512;
+    private const int MAX_SEQUENCE_LENGTH = 256;
 
     public E5SmallTokenizer(string vocabPath)
     {
@@ -23,8 +23,12 @@ public class E5SmallTokenizer
         // Pass 1: Parallel Tokenization
         Parallel.For(0, count, i =>
         {
-            var raw = _tokenizer.EncodeToIds(texts[i] ?? string.Empty);
+            var text = texts[i] ?? string.Empty;
+            var raw = _tokenizer.EncodeToIds(text);
             rawIdsBatch[i] = raw;
+
+            // Debug: Log input text and token count
+            Console.WriteLine($"[Tokenizer] Input[{i}]: '{text.Replace("\n", " ").Replace("\r", " ")}' | Tokens: {raw.Count}");
 
             // Total = CLS (1) + Prefix + Text + SEP (1)
             int totalLen = 1 + prefixIds.Count + raw.Count + 1;
@@ -38,6 +42,13 @@ public class E5SmallTokenizer
             } while (Interlocked.CompareExchange(ref batchMaxLen, cappedLen, initialMax) != initialMax);
         });
 
+        Console.WriteLine($"[Tokenizer] Final batchMaxLen: {batchMaxLen}, count: {count}");
+
+        if (batchMaxLen == 0)
+        {
+            Console.WriteLine("[Tokenizer] ERROR: batchMaxLen is zero! No valid input?");
+        }
+
         long[] flatIds = new long[count * batchMaxLen];
         long[] flatMask = new long[count * batchMaxLen];
         long[] flatTypes = new long[count * batchMaxLen];
@@ -49,11 +60,25 @@ public class E5SmallTokenizer
             int rowOffset = i * batchMaxLen;
             int currentPos = rowOffset;
 
+            // Debug: Log rowOffset and array bounds
+            if (rowOffset >= flatIds.Length)
+            {
+                Console.WriteLine($"[Tokenizer] ERROR: rowOffset {rowOffset} >= flatIds.Length {flatIds.Length} (i={i})");
+                return;
+            }
+
             // 1. CLS
             if (currentPos - rowOffset < batchMaxLen)
             {
-                flatIds[currentPos] = 101L;
-                flatMask[currentPos] = 1L;
+                if (currentPos < flatIds.Length)
+                {
+                    flatIds[currentPos] = 101L;
+                    flatMask[currentPos] = 1L;
+                }
+                else
+                {
+                    Console.WriteLine($"[Tokenizer] ERROR: currentPos {currentPos} >= flatIds.Length {flatIds.Length} (CLS, i={i})");
+                }
                 currentPos++;
             }
 
@@ -62,8 +87,15 @@ public class E5SmallTokenizer
             {
                 if (currentPos - rowOffset >= batchMaxLen)
                     break;
-                flatIds[currentPos] = (long)pId;
-                flatMask[currentPos] = 1L;
+                if (currentPos < flatIds.Length)
+                {
+                    flatIds[currentPos] = (long)pId;
+                    flatMask[currentPos] = 1L;
+                }
+                else
+                {
+                    Console.WriteLine($"[Tokenizer] ERROR: currentPos {currentPos} >= flatIds.Length {flatIds.Length} (Prefix, i={i})");
+                }
                 currentPos++;
             }
 
@@ -72,18 +104,35 @@ public class E5SmallTokenizer
             {
                 if (currentPos - rowOffset >= batchMaxLen)
                     break;
-                flatIds[currentPos] = (long)tId;
-                flatMask[currentPos] = 1L;
+                if (currentPos < flatIds.Length)
+                {
+                    flatIds[currentPos] = (long)tId;
+                    flatMask[currentPos] = 1L;
+                }
+                else
+                {
+                    Console.WriteLine($"[Tokenizer] ERROR: currentPos {currentPos} >= flatIds.Length {flatIds.Length} (Text, i={i})");
+                }
                 currentPos++;
             }
 
             // 4. SEP
             if (currentPos - rowOffset < batchMaxLen)
             {
-                flatIds[currentPos] = 102L;
-                flatMask[currentPos] = 1L;
+                if (currentPos < flatIds.Length)
+                {
+                    flatIds[currentPos] = 102L;
+                    flatMask[currentPos] = 1L;
+                }
+                else
+                {
+                    Console.WriteLine($"[Tokenizer] ERROR: currentPos {currentPos} >= flatIds.Length {flatIds.Length} (SEP, i={i})");
+                }
                 currentPos++;
             }
+
+            // Debug: Log final currentPos for this row
+            Console.WriteLine($"[Tokenizer] Row {i}: rowOffset={rowOffset}, final currentPos={currentPos}");
         });
 
         return (flatIds, flatTypes, flatMask, batchMaxLen);

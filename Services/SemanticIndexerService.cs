@@ -135,7 +135,7 @@ public class SemanticIndexerService
 
     private async Task ProcessEmbeddingsOnGpu(BlockingCollection<FileContent> input)
     {
-        const int GPU_BATCH_SIZE = 128;
+        const int GPU_BATCH_SIZE = 200;
         var gpuModel = _model.Factory();
         var localBatch = new List<FileContent>(GPU_BATCH_SIZE);
 

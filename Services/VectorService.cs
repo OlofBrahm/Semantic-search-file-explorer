@@ -17,7 +17,7 @@ namespace VectorDataBase.Services
         private int _nextId = 0;
         private DocumentStore _documentStore;
         private readonly StartupService _startupService;
-        private string _rootPath = @"C:\Users\olleb\";
+        private string _rootPath = @"C:\Users\olleb\Documents\test_bulk ";
 
         public VectorService(HnswIndexV3 dataIndex, IEmbeddingModel embeddingModel)
         {
@@ -37,7 +37,9 @@ namespace VectorDataBase.Services
         public List<DocumentModel> Search(string[] query, int k)
         {
             Console.WriteLine($"Current node count in index: {_dataIndex.NodeCount}");
-            var queryEmbedding = _embeddingModel.GetEmbeddings(query, isQuery: true);
+            var queryText = string.Join(" ", query);
+            Console.WriteLine($"[VectorService] Search called with query: '{queryText}' and k={k}");
+            var queryEmbedding = _embeddingModel.GetEmbeddings(new[] { queryText }, isQuery: true);
             float[] primaryQueryVector = queryEmbedding[0];
             var documentIds = _dataIndex.GetOriginalDocumentIds(primaryQueryVector, k);
             return _documentStore.GetDocumentByids(documentIds);

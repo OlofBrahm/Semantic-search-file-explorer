@@ -5,7 +5,7 @@ namespace VectorDataBase.Utils;
 
 public static class SimpleTextChunker
 {
-    public static string[] Chunk(string text, int maxChunkSize = 1500)
+    public static string[] Chunk(string text, int maxChunkSize = 600)
     {
         var chunks = new List<string>();
 
