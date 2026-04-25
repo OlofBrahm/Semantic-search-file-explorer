@@ -14,7 +14,8 @@ USE AT YOUR OWN RISK
 
 ## TODOs & Ideas
 - Solve extreme initial load time
-- Display what chunk of the file is the hit.
+- Reduce 'Chunk' size to less than 256 tokens to increase embedding speed.
+- Display what chunk of the file is the hit. Preview button.
 - Add batching for embedding (performance improvement)
 - Support for multi-threaded indexing
 - Cross-platform support
