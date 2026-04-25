@@ -10,9 +10,9 @@ USE AT YOUR OWN RISK
 - **File System Indexing**: Recursively scans a user-specified directory, indexing a wide variety of text-based documents.
 - **Supported File Types**: Out-of-the-box support for `.txt`, `.md`, `.log`, `.json`, `.cs`, `.py`, `.html`, `.xml`, `.docx`, and others.
 - **Efficient Nearest Neighbor Search**: Uses a custom HNSW (Hierarchical Navigable Small World) index for fast approximate nearest neighbor searches.
-- **Console Interface**: Simple interactive prompt for entering queries and viewing results.
 
 ## TODOs & Ideas
 - Keyword support for the hit rankings, required for shorter file lengths.
 - Display what chunk of the file is the hit. Preview button.
 - Cross-platform support
+- Trying to minimize GC calls, using array pools and reuse already allocated memory.
