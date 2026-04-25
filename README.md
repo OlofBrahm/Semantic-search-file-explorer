@@ -14,6 +14,7 @@ USE AT YOUR OWN RISK
 
 ## TODOs & Ideas
 - Solve extreme initial load time
+- Display what chunk of the file is the hit.
 - Add batching for embedding (performance improvement)
 - Support for multi-threaded indexing
 - Cross-platform support
