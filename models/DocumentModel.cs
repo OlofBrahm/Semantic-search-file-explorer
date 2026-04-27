@@ -15,7 +15,7 @@ public class DocumentModel
     /// <summary>
     /// The full content of the document
     /// </summary>
-    public string FilePath = string.Empty;
+    public string FilePath { get; set; } = string.Empty;
 
     /// <summary>
     /// Optional metadata (author, date, source)

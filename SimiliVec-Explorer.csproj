@@ -6,10 +6,13 @@
     <RootNamespace>SimiliVec_Explorer</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
 		  <PackageReference Include="AlphaFS" Version="2.2.6" />
+		  <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.7" />
+		  <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.7" />
 		  <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
 		  <PackageReference Include="Microsoft.ML" Version="5.0.0" />
 		  <PackageReference Include="Microsoft.ML.DataView" Version="5.0.0" />
@@ -22,13 +25,13 @@
   </ItemGroup>
 
 	<ItemGroup>
-	  <Folder Include="FileSystemScan\" />
-	</ItemGroup>
-
-	<ItemGroup>
 	  <Content Include="MLModels\e5-small-v2\**\*">
 	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	  </Content>
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Folder Include="Storage\" />
 	</ItemGroup>
 
 </Project>

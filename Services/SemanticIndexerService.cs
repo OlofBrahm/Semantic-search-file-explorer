@@ -1,11 +1,13 @@
-﻿using Alphaleonis.Win32.Filesystem;
+using Alphaleonis.Win32.Filesystem;
 using SimiliVec_Explorer.DocumentStorer;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
 using VectorDataBase.Indices;
 using VectorDataBase.Interfaces;
-using System.Linq;
+using VectorDataBase.Persistence;
+using VectorDataBase.Models;
 
 public class SemanticIndexerService
 {
@@ -15,6 +17,7 @@ public class SemanticIndexerService
     private readonly object _indexLock = new();
     private int idGenerator = 0;
     private readonly Random _random = new Random();
+    private readonly HnswStorage _storage;
 
     // Priority extensions for "immediate" indexing
     private static readonly HashSet<string> HighPriorityExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -111,7 +114,7 @@ public class SemanticIndexerService
             {
                 // Commercial Logic: Don't read huge files entirely to start
                 var fileInfo = new System.IO.FileInfo(path);
-                if (fileInfo.Length > 10 * 1024 * 1024) return; // Skip files > 10MB for first-pass
+                //if (fileInfo.Length > 10 * 1024 * 1024) return; // Skip files > 10MB for first-pass
 
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 using var reader = new StreamReader(stream);
@@ -120,7 +123,8 @@ public class SemanticIndexerService
                 if (string.IsNullOrWhiteSpace(content) || IsBinaryContent(content)) return;
 
                 int id = Interlocked.Increment(ref idGenerator);
-                _documentStore.AddDocument(id, path);
+                Console.WriteLine($"[DEBUG] SaveDocument: DocumentId={id}, FilePath={path}");
+                _documentStore.SaveDocument(new DocumentModel { Id = id, FilePath = path });
 
                 output.Add(new FileContent { Id = id, Content = content });
             }
@@ -176,10 +180,10 @@ public class SemanticIndexerService
         {
             for (int i = 0; i < batch.Count; i++)
             {
+                Console.WriteLine($"[DEBUG] HNSW Insert: DocumentId={batch[i].Id}");
                 _index.Insert(vectors[i], batch[i].Id, _random);
             }
         }
-        
         Console.WriteLine($"[Timing] RunBatchToIndex for {batch.Count} docs took {sw.Elapsed.TotalMilliseconds} ms");
         sw.Stop();
     }
@@ -206,5 +210,5 @@ public class SemanticIndexerService
 public class FileContent
 {
     public int Id { get; set; }
-    public string Content { get; set; }
+    public string Content { get; set; } = string.Empty;
 }

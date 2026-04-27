@@ -27,8 +27,18 @@ namespace SimiliVec_Explorer.Services
 
         public async Task InitializeAsync(string rootPath)
         {
-            Console.WriteLine("Starting indexing process...");
-            await _semanticIndexerService.RunFullIndexAsync(rootPath);
+            if(!_documentstore.IsPopulated())
+            {
+                Console.WriteLine("No existing data found. Starting indexing process...");
+                await _semanticIndexerService.RunFullIndexAsync(rootPath);
+            }
+            else
+            {
+                Console.WriteLine("Existing data found. Loading index...");
+
+
+            }
         }
+
     }
 }

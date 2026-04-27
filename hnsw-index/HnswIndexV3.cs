@@ -1,10 +1,9 @@
-using System;
 using System.Buffers;
-using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using VectorDataBase.Models;
+using VectorDataBase.Persistence;
 using VectorDataBase.Utils;
 
 namespace VectorDataBase.Indices;
@@ -13,6 +12,7 @@ public sealed class HnswIndexV3
 {
     private HnswNodeV3[] _nodes;
     private int _nodeCount;
+    private readonly HnswStorage _storage;
 
     private float[] _vectorPool;
     private int _vectorPoolCount;
@@ -25,6 +25,7 @@ public sealed class HnswIndexV3
     private int[] _levelCountsPool;
     private int _levelPoolCount;
 
+
     private readonly object _writeLock = new();
 
     public int EntryPointId { get; private set; } = -1;
@@ -35,42 +36,55 @@ public sealed class HnswIndexV3
 
     public int NodeCount => _nodeCount;
 
-    public HnswIndexV3(int initialCapacity = 65536)
+    public HnswIndexV3(HnswStorage storage, int initialCapacity = 65536, bool loadFromStorage = false)
     {
-        _nodes = new HnswNodeV3[initialCapacity];
-        _vectorPool = Array.Empty<float>();
-        _neighborPool = Array.Empty<int>();
-        _levelOffsetsPool = Array.Empty<int>();
-        _levelCountsPool = Array.Empty<int>();
+        _storage = storage;
+        if (loadFromStorage)
+        {
+            var header = _storage.ReadHeader();
+            if (header.MagicNumber != unchecked((int)0xDEADBEEF))
+                throw new InvalidDataException("Invalid or corrupt HNSW index file.");
+            if (header.Version != 1)
+                throw new NotSupportedException("Unsupported index version.");
+
+            _nodes = new HnswNodeV3[header.TotalNodes];
+            _vectorPool = new float[header.TotalNodes * header.VectorDimension];
+            _neighborPool = new int[header.TotalNodes * MaxNeighbours];
+            _levelOffsetsPool = new int[header.TotalNodes];
+            _levelCountsPool = new int[header.TotalNodes];
+        }
+        else
+        {
+            _nodes = new HnswNodeV3[initialCapacity];
+            _vectorPool = new float[initialCapacity * 128];
+            _neighborPool = new int[initialCapacity * 16];
+            _levelOffsetsPool = new int[initialCapacity];
+            _levelCountsPool = new int[initialCapacity];
+        }
     }
-    /// <summary>
-    /// TODO: remake into flat array, and return document ids directly from search instead of node ids. This way we can skip the final loop and reduce allocations.
-    /// </summary>
-    /// <param name="queryEmbedding"></param>
-    /// <param name="k"></param>
-    /// <returns></returns>
+
     public List<int> GetOriginalDocumentIds(float[] queryEmbedding, int k)
     {
+        // Fix: Added null/empty check
+        if (queryEmbedding == null || queryEmbedding.Length == 0) return new List<int>();
+
         var nodeIds = FindNearestUniqueDocs(queryEmbedding, k);
         var documentIds = new List<int>(nodeIds.Count);
+
         foreach (var nodeId in nodeIds)
         {
-            if (nodeId >= 0 && nodeId < _nodeCount)
-            {
-                documentIds.Add(_nodes[nodeId].OriginalDocumentId);
-            }
+            documentIds.Add(_nodes[nodeId].OriginalDocumentId);
         }
         return documentIds;
     }
 
     public int Insert(float[] vector, int originalDocumentId, Random random)
     {
-        if (vector.Length == 0) throw new ArgumentException("Vector cannot be empty.", nameof(vector));
+        if (vector == null || vector.Length == 0) throw new ArgumentException("Vector empty.");
 
         lock (_writeLock)
         {
             if (_vectorDim == 0) _vectorDim = vector.Length;
-            else if (_vectorDim != vector.Length) throw new ArgumentException("Dimensionality mismatch.");
 
             int nodeId = _nodeCount;
             EnsureNodeCapacity(nodeId + 1);
@@ -102,36 +116,46 @@ public sealed class HnswIndexV3
             {
                 EntryPointId = nodeId;
                 MaxLevel = level;
-                return nodeId;
+            }
+            else
+            {
+                int currEntryPoint = EntryPointId;
+                // Fix: Pass the actual vector to avoid redundant GetVector calls inside search
+                float[] normalized = NormalizedCopy(vector);
+
+                currEntryPoint = SearchTopLayers(normalized, currEntryPoint, level);
+                ConnectLayers(node, normalized, currEntryPoint);
+                UpdateMaxState(node);
             }
 
-            int entry = EntryPointId;
-            entry = SearchTopLayers(node, entry);
-            ConnectLayers(node, entry);
-            UpdateMaxState(node);
-
+            _storage?.SaveNode(nodeId, node);
+            _storage?.SaveVector(nodeId, vector);
+            _storage.WriteHeader(new HnswHeader
+            {
+                MagicNumber = 0xDEADBEEF,
+                Version = 1,
+                TotalNodes = _nodeCount,
+                VectorDimension = _vectorDim,
+                EntryPointId = EntryPointId
+            });
+            _storage?.Commit();
             return nodeId;
         }
     }
 
-    /// <summary>
-    /// Searches for K unique documents. If a single document dominates the top results, 
-    /// the search depth (ef) expands to find other files.
-    /// TODO: This can be optimized by returning document ids directly from SearchLayer and skipping the final loop, but it requires refactoring the neighbor selection to work with doc ids instead of node ids.
-    /// TODO: Is there a way to reverse engineer the vector so that we can return what in the original document was the closest match, instead of just the document id? This would be a game changer for interpretability and user experience, 
-    /// as we could highlight the relevant text in the original file. It might be possible to store some kind of "centroid" vector for each document that represents the most typical chunk, and return that along with the document id. 
-    /// Or we could try to reconstruct a pseudo-vector from the neighbors and use that for better results. This is a complex problem but would be a huge improvement if solved. 
-    /// If we could find a index span of chars and return that and then extract the substring from the original text.
-    /// </summary>
     public List<int> FindNearestUniqueDocs(float[] queryVector, int k, int? efSearch = null)
     {
-        if (_nodeCount == 0) return new List<int>();
+        // Thread-safe snapshots of entry state
+        int entry = EntryPointId;
+        int maxLvl = MaxLevel;
+        int count = _nodeCount;
+
+        if (count == 0 || entry == -1) return new List<int>();
 
         float[] normalized = NormalizedCopy(queryVector);
-        int entry = EntryPointId;
 
-        // Navigate down to layer 0
-        for (int lev = MaxLevel; lev >= 1; lev--)
+        // Fix: Downward traversal ensures 'entry' is always the best found so far
+        for (int lev = maxLvl; lev >= 1; lev--)
         {
             List<int> candidates = SearchLayer(normalized, entry, lev, ef: 1);
             if (candidates.Count > 0) entry = candidates[0];
@@ -139,99 +163,75 @@ public sealed class HnswIndexV3
 
         var uniqueResults = new List<int>(k);
         var seenDocs = new HashSet<int>();
+        int currentEf = efSearch ?? Math.Max(EfConstruction, k);
+        int maxAllowedEf = Math.Min(count, 2048);
 
-        // Start with a standard ef, but allow it to grow if we don't find enough unique files
-        int currentEf = efSearch ?? Math.Max(EfConstruction, k * 2);
-        int maxAllowedEf = Math.Min(_nodeCount, 2048);
+        // Final Search at Level 0
+        List<int> finalCandidates = SearchLayer(normalized, entry, 0, currentEf);
 
-        currentEf = Math.Max(1, Math.Min(currentEf, maxAllowedEf));
-
-        while (uniqueResults.Count < k && currentEf <= maxAllowedEf)
+        foreach (var nodeId in finalCandidates)
         {
-            List<int> finalCandidates = SearchLayer(normalized, entry, 0, currentEf);
-
-            foreach (var nodeId in finalCandidates)
+            int docId = _nodes[nodeId].OriginalDocumentId;
+            if (seenDocs.Add(docId))
             {
-                int docId = _nodes[nodeId].OriginalDocumentId;
-                if (seenDocs.Add(docId))
-                {
-                    uniqueResults.Add(nodeId);
-                }
-                if (uniqueResults.Count >= k) break;
+                uniqueResults.Add(nodeId);
             }
-
             if (uniqueResults.Count >= k) break;
-            currentEf *= 2; // Expand the net
         }
 
         return uniqueResults;
     }
 
-    private int SearchTopLayers(HnswNodeV3 node, int entryId)
+    private int SearchTopLayers(float[] queryVec, int entryId, int targetLevel)
     {
-        float[] vec = GetVector(node);
-        for (int lev = MaxLevel; lev > node.Level; lev--)
+        // Fix: Use the snapshot of MaxLevel
+        for (int lev = MaxLevel; lev > targetLevel; lev--)
         {
-            List<int> candidates = SearchLayer(vec, entryId, lev, ef: 1);
+            List<int> candidates = SearchLayer(queryVec, entryId, lev, ef: 1);
             if (candidates.Count > 0) entryId = candidates[0];
         }
         return entryId;
     }
 
-    private void ConnectLayers(HnswNodeV3 node, int entryId)
+    private void ConnectLayers(HnswNodeV3 node, float[] queryVec, int entryId)
     {
-        float[] vec = GetVector(node);
         for (int lev = Math.Min(node.Level, MaxLevel); lev >= 0; lev--)
         {
-            // SearchLayer returns a List<int>
-            List<int> candidates = SearchLayer(vec, entryId, lev, EfConstruction);
+            List<int> candidates = SearchLayer(queryVec, entryId, lev, EfConstruction);
 
             int[] selectedArray = ArrayPool<int>.Shared.Rent(MaxNeighbours);
             try
             {
                 var selected = selectedArray.AsSpan(0, MaxNeighbours);
-
-                // USE CollectionsMarshal.AsSpan to pass the list efficiently
-                ReadOnlySpan<int> candidateSpan = CollectionsMarshal.AsSpan(candidates);
-
-                int selCount = SelectNeighbors(vec, candidateSpan, selected, node.OriginalDocumentId);
+                int selCount = SelectNeighbors(queryVec, CollectionsMarshal.AsSpan(candidates), selected, node.OriginalDocumentId);
 
                 for (int i = 0; i < selCount; i++)
                 {
-                    AddNeighbor(node.Id, lev, selected[i]);
-                    AddNeighbor(selected[i], lev, node.Id, allowShrink: true);
+                    int neighborId = selected[i];
+                    AddNeighbor(node.Id, lev, neighborId);
+                    AddNeighbor(neighborId, lev, node.Id, allowShrink: true);
                 }
             }
-            finally
-            {
-                ArrayPool<int>.Shared.Return(selectedArray);
-            }
+            finally { ArrayPool<int>.Shared.Return(selectedArray); }
 
             if (candidates.Count > 0) entryId = candidates[0];
         }
     }
 
-    /// <summary>
-    /// Diversity-aware neighbor selection. Prevents a node from filling its 
-    /// neighbor list exclusively with chunks from its own document.
-    /// </summary>
     private int SelectNeighbors(float[] queryVector, ReadOnlySpan<int> candidates, Span<int> output, int sourceDocId)
     {
         int candidateCount = candidates.Length;
         if (candidateCount == 0) return 0;
 
-        Span<(float dist, int id)> sorted = candidateCount <= 256
-            ? stackalloc (float, int)[candidateCount]
-            : new (float, int)[candidateCount];
-
+        Span<(float dist, int id)> sorted = candidateCount <= 256 ? stackalloc (float, int)[candidateCount] : new (float, int)[candidateCount];
         for (int i = 0; i < candidateCount; i++)
-        {
             sorted[i] = (Distance(queryVector, candidates[i]), candidates[i]);
-        }
+
         MemoryExtensions.Sort(sorted, static (a, b) => a.dist.CompareTo(b.dist));
 
         int selCount = 0;
-        int sameDocLimit = Math.Max(1, MaxNeighbours / 4); // Only 25% can be from the same file
+        // Heuristic: allow some same-doc neighbors to maintain connectivity, but prioritize diversity
+        int sameDocLimit = Math.Max(1, MaxNeighbours / 4);
 
         foreach (var (dist, id) in sorted)
         {
@@ -243,21 +243,17 @@ public sealed class HnswIndexV3
 
             for (int j = 0; j < selCount; j++)
             {
-                // HNSW Heuristic: Is this node closer to an existing neighbor than to the query?
                 if (Distance(id, output[j]) < dist) { diverse = false; break; }
-
-                // Diversity check: Count same-document neighbors already added
                 if (_nodes[output[j]].OriginalDocumentId == candDocId) sameDocCount++;
             }
 
-            // If it's a sibling chunk, check the quota
             if (candDocId == sourceDocId && sameDocCount >= sameDocLimit) diverse = false;
 
             if (diverse) output[selCount++] = id;
         }
 
-        // Fill remaining slots if the diversity check was too strict
-        if (selCount < output.Length)
+        // Fallback: fill remaining slots with closest candidates if diversity pruning was too aggressive
+        if (selCount < output.Length && selCount < candidateCount)
         {
             foreach (var (_, id) in sorted)
             {
@@ -273,24 +269,23 @@ public sealed class HnswIndexV3
     private List<int> SearchLayer(float[] queryVector, int entryId, int layer, int ef)
     {
         ef = Math.Max(1, ef);
-        if (entryId < 0 || entryId >= _nodeCount) return new List<int>();
+        int currentCount = _nodeCount;
+        if (entryId < 0 || entryId >= currentCount) return new List<int>();
 
-        int[] visitedGen = ArrayPool<int>.Shared.Rent(_nodeCount);
-        int generation = Environment.TickCount;
+        // Visited set using a simple generation check to avoid clearing the whole array
+        int[] visitedGen = ArrayPool<int>.Shared.Rent(currentCount);
+        Array.Clear(visitedGen, 0, currentCount);
 
-        var candidateQueue = new PriorityQueue<int, float>();
-        var bestResults = new PriorityQueue<int, float>();
+        var candidateQueue = new PriorityQueue<int, float>(); // Min-heap (closest first)
+        var bestResults = new PriorityQueue<int, float>();    // Max-heap (furthest of the best first)
 
         float entryDist = Distance(queryVector, entryId);
         candidateQueue.Enqueue(entryId, entryDist);
         bestResults.Enqueue(entryId, -entryDist);
-        visitedGen[entryId] = generation;
+        visitedGen[entryId] = 1;
 
-        while (candidateQueue.Count > 0)
+        while (candidateQueue.TryDequeue(out int currentId, out float currentDist))
         {
-            candidateQueue.TryPeek(out int currentId, out float currentDist);
-            candidateQueue.Dequeue();
-
             bestResults.TryPeek(out _, out float worstDistNeg);
             if (currentDist > -worstDistNeg && bestResults.Count >= ef) break;
 
@@ -298,9 +293,9 @@ public sealed class HnswIndexV3
             for (int i = 0; i < neighborCount; i++)
             {
                 int neighborId = _neighborPool[neighborOffset + i];
-                if (visitedGen[neighborId] == generation) continue;
+                if (neighborId < 0 || neighborId >= currentCount || visitedGen[neighborId] == 1) continue;
 
-                visitedGen[neighborId] = generation;
+                visitedGen[neighborId] = 1;
                 float neighborDist = Distance(queryVector, neighborId);
 
                 if (bestResults.Count < ef || neighborDist < -worstDistNeg)
@@ -320,107 +315,6 @@ public sealed class HnswIndexV3
         return results;
     }
 
-    // --- REMAINDER OF UTILITIES (AddNeighbor, Pool Mgmt, SIMD) ---
-    private void AddNeighbor(int nodeId, int layer, int neighborId, bool allowShrink = false)
-    {
-        int levelIndex = _nodes[nodeId].NeighborOffset + layer;
-        int neighborOffset = _levelOffsetsPool[levelIndex];
-        int count = _levelCountsPool[levelIndex];
-
-        if (count < MaxNeighbours)
-        {
-            _neighborPool[neighborOffset + count] = neighborId;
-            _levelCountsPool[levelIndex] = count + 1;
-        }
-        else if (allowShrink) ShrinkConnections(nodeId, layer, neighborId);
-    }
-
-    private void ShrinkConnections(int nodeId, int layer, int newCandidateId)
-    {
-        int levelIndex = _nodes[nodeId].NeighborOffset + layer;
-        int neighborOffset = _levelOffsetsPool[levelIndex];
-        int count = _levelCountsPool[levelIndex];
-
-        int total = count + 1;
-        Span<int> candidates = total <= 128 ? stackalloc int[total] : new int[total];
-        for (int i = 0; i < count; i++) candidates[i] = _neighborPool[neighborOffset + i];
-        candidates[count] = newCandidateId;
-
-        int[] selectedArray = ArrayPool<int>.Shared.Rent(MaxNeighbours);
-        try
-        {
-            var selected = selectedArray.AsSpan(0, MaxNeighbours);
-            int selCount = SelectNeighbors(GetVector(nodeId), candidates, selected, _nodes[nodeId].OriginalDocumentId);
-            for (int i = 0; i < selCount; i++) _neighborPool[neighborOffset + i] = selected[i];
-            _levelCountsPool[levelIndex] = selCount;
-        }
-        finally { ArrayPool<int>.Shared.Return(selectedArray); }
-    }
-
-    private void UpdateMaxState(HnswNodeV3 node)
-    {
-        if (node.Level > MaxLevel) { MaxLevel = node.Level; EntryPointId = node.Id; }
-    }
-
-    private int AllocateLevelMetadata(int levelCount)
-    {
-        int start = _levelPoolCount;
-        int required = _levelPoolCount + levelCount;
-        if (required > _levelOffsetsPool.Length)
-        {
-            int newSize = Math.Max(required, _levelOffsetsPool.Length * 2 + 128);
-            Array.Resize(ref _levelOffsetsPool, newSize);
-            Array.Resize(ref _levelCountsPool, newSize);
-        }
-        _levelPoolCount = required;
-        return start;
-    }
-
-    private int AllocateNeighborBlock()
-    {
-        int start = _neighborPoolCount;
-        int required = _neighborPoolCount + MaxNeighbours + 1;
-        if (required > _neighborPool.Length)
-        {
-            Array.Resize(ref _neighborPool, Math.Max(required, _neighborPool.Length * 2 + 1024));
-        }
-        _neighborPoolCount = required;
-        return start;
-    }
-
-    private int AppendVector(float[] vector)
-    {
-        float[] normalized = NormalizedCopy(vector);
-        int start = _vectorPoolCount;
-        if (_vectorPoolCount + _vectorDim > _vectorPool.Length)
-        {
-            Array.Resize(ref _vectorPool, Math.Max(_vectorPoolCount + _vectorDim, _vectorPool.Length * 2 + _vectorDim));
-        }
-        Array.Copy(normalized, 0, _vectorPool, start, _vectorDim);
-        _vectorPoolCount += _vectorDim;
-        return start;
-    }
-
-    private void EnsureNodeCapacity(int required)
-    {
-        if (required > _nodes.Length) Array.Resize(ref _nodes, _nodes.Length * 2);
-    }
-
-    private float[] GetVector(HnswNodeV3 node) => GetVector(node.Id);
-    //private ReadOnlySpan<float> GetVectorSpan(int nodeId) => _vectorPool.AsSpan(_nodes[nodeId].VectorOffset, _vectorDim);
-    private float[] GetVector(int nodeId)
-    {
-        var v = new float[_vectorDim];
-        Array.Copy(_vectorPool, _nodes[nodeId].VectorOffset, v, 0, _vectorDim);
-        return v;
-    }
-
-    private (int offset, int count) GetNeighborBlock(int nodeId, int level)
-    {
-        int idx = _nodes[nodeId].NeighborOffset + level;
-        return (_levelOffsetsPool[idx], _levelCountsPool[idx]);
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private float Distance(float[] queryVector, int nodeId) => 1f - DotProductSIMD(queryVector, nodeId);
 
@@ -432,8 +326,7 @@ public sealed class HnswIndexV3
     {
         int offset = _nodes[nodeId].VectorOffset;
         var acc = Vector<float>.Zero;
-        int i = 0;
-        int step = Vector<float>.Count;
+        int i = 0, step = Vector<float>.Count;
         for (; i <= _vectorDim - step; i += step)
             acc += new Vector<float>(q, i) * new Vector<float>(_vectorPool, offset + i);
         float dot = Vector.Dot(acc, Vector<float>.One);
@@ -453,6 +346,112 @@ public sealed class HnswIndexV3
         float dot = Vector.Dot(acc, Vector<float>.One);
         for (; i < _vectorDim; i++) dot += _vectorPool[offA + i] * _vectorPool[offB + i];
         return dot;
+    }
+
+    private int AppendVector(float[] vector)
+    {
+        float[] normalized = NormalizedCopy(vector);
+        int start = _vectorPoolCount;
+        if (_vectorPoolCount + _vectorDim > _vectorPool.Length)
+            Array.Resize(ref _vectorPool, Math.Max(_vectorPoolCount + _vectorDim, _vectorPool.Length * 2));
+        Array.Copy(normalized, 0, _vectorPool, start, _vectorDim);
+        _vectorPoolCount += _vectorDim;
+        return start;
+    }
+
+    private float[] GetVector(int nodeId)
+    {
+        var v = new float[_vectorDim];
+        Array.Copy(_vectorPool, _nodes[nodeId].VectorOffset, v, 0, _vectorDim);
+        return v;
+    }
+
+    private void EnsureNodeCapacity(int required)
+    {
+        if (required > _nodes.Length) Array.Resize(ref _nodes, _nodes.Length * 2);
+    }
+
+    private void AddNeighbor(int nodeId, int layer, int neighborId, bool allowShrink = false)
+    {
+        int levelIndex = _nodes[nodeId].NeighborOffset + layer;
+        int offset = _levelOffsetsPool[levelIndex];
+        int count = _levelCountsPool[levelIndex];
+
+        // Fix: Prevent self-looping
+        if (nodeId == neighborId) return;
+
+        if (count < MaxNeighbours)
+        {
+            // Check for duplicates before adding
+            for (int i = 0; i < count; i++) if (_neighborPool[offset + i] == neighborId) return;
+
+            _neighborPool[offset + count] = neighborId;
+            _levelCountsPool[levelIndex] = count + 1;
+        }
+        else if (allowShrink)
+        {
+            ShrinkConnections(nodeId, layer, neighborId);
+        }
+    }
+
+    private void ShrinkConnections(int nodeId, int layer, int newCandidateId)
+    {
+        int levelIndex = _nodes[nodeId].NeighborOffset + layer;
+        int offset = _levelOffsetsPool[levelIndex];
+        int count = _levelCountsPool[levelIndex];
+
+        // Fix: Check if candidate already exists in the full block
+        for (int i = 0; i < count; i++) if (_neighborPool[offset + i] == newCandidateId) return;
+
+        Span<int> candidates = stackalloc int[count + 1];
+        for (int i = 0; i < count; i++) candidates[i] = _neighborPool[offset + i];
+        candidates[count] = newCandidateId;
+
+        int[] selectedArray = ArrayPool<int>.Shared.Rent(MaxNeighbours);
+        try
+        {
+            var selected = selectedArray.AsSpan(0, MaxNeighbours);
+            int selCount = SelectNeighbors(GetVector(nodeId), candidates, selected, _nodes[nodeId].OriginalDocumentId);
+            for (int i = 0; i < selCount; i++) _neighborPool[offset + i] = selected[i];
+            _levelCountsPool[levelIndex] = selCount;
+        }
+        finally { ArrayPool<int>.Shared.Return(selectedArray); }
+    }
+
+    private int AllocateLevelMetadata(int levelCount)
+    {
+        int start = _levelPoolCount;
+        _levelPoolCount += levelCount;
+        if (_levelPoolCount > _levelOffsetsPool.Length)
+        {
+            Array.Resize(ref _levelOffsetsPool, _levelPoolCount * 2);
+            Array.Resize(ref _levelCountsPool, _levelPoolCount * 2);
+        }
+        return start;
+    }
+
+    private int AllocateNeighborBlock()
+    {
+        int start = _neighborPoolCount;
+        _neighborPoolCount += MaxNeighbours;
+        if (_neighborPoolCount > _neighborPool.Length)
+            Array.Resize(ref _neighborPool, _neighborPoolCount * 2);
+        return start;
+    }
+
+    private (int offset, int count) GetNeighborBlock(int nodeId, int level)
+    {
+        int idx = _nodes[nodeId].NeighborOffset + level;
+        return (_levelOffsetsPool[idx], _levelCountsPool[idx]);
+    }
+
+    private void UpdateMaxState(HnswNodeV3 node)
+    {
+        if (node.Level > MaxLevel)
+        {
+            MaxLevel = node.Level;
+            EntryPointId = node.Id;
+        }
     }
 
     private static float[] NormalizedCopy(float[] v) { float[] c = (float[])v.Clone(); NormalizeInPlace(c); return c; }

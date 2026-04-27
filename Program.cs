@@ -3,6 +3,7 @@ using VectorDataBase.Models;
 using VectorDataBase.Indices;
 using VectorDataBase.Embedding;
 using System.ComponentModel;
+using VectorDataBase.Persistence;
 
 namespace SimiliVec_Explorer
 {
@@ -10,14 +11,10 @@ namespace SimiliVec_Explorer
     {
         static async Task Main(string[] args)
         {
-            VectorService vectorService = new VectorService(new HnswIndexV3
-            {
-                MaxNeighbours = 16,
-                EfConstruction = 200,
-                InverseLogM = 1.0f / MathF.Log(16)
-            }, new EmbeddingModel());
-
+            
+            VectorService vectorService = new VectorService();
             await vectorService.Initialize();
+            
             while (true)
             {
                 Console.WriteLine("Add search query: ");
