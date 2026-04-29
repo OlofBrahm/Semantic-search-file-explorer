@@ -17,26 +17,68 @@ namespace VectorDataBase.Persistence
         private MemoryMappedViewAccessor _headerAccessor;
         private MemoryMappedViewAccessor _nodeAccessor;
         private MemoryMappedViewAccessor _vectorAccessor;
+        private MemoryMappedViewAccessor _neighborAccessor;
+        private MemoryMappedViewAccessor _levelOffsetsAccessor;
+        private MemoryMappedViewAccessor _levelCountsAccessor;
 
 
         private readonly long _nodeOffset;
         private readonly long _vectorOffset;
         private readonly long _nodeSize = Marshal.SizeOf<HnswNodeV3>();
         private readonly int _vectorSize;
+        private readonly long _neighborOffset;
+        private readonly long _levelOffsetsOffset;
+        private readonly long _levelCountsOffset;
 
         public HnswStorage(string filePath, int maxNodes, int dimensions)
         {
             _vectorSize = dimensions * sizeof(float);
-            //Calculate offsets
+            // Calculate offsets
             _nodeOffset = 1024;
             _vectorOffset = _nodeOffset + ((long)maxNodes * _nodeSize);
-            long totalFileSize = _vectorOffset + ((long)maxNodes * _vectorSize);
+            _neighborOffset = _vectorOffset + ((long)maxNodes * _vectorSize);
+            _levelOffsetsOffset = _neighborOffset + ((long)maxNodes * 16 * sizeof(int));
+            _levelCountsOffset = _levelOffsetsOffset + ((long)maxNodes * sizeof(int));
+            long totalFileSize = _levelCountsOffset + ((long)maxNodes * sizeof(int));
 
             _mmf = MemoryMappedFile.CreateFromFile(filePath, FileMode.OpenOrCreate, "HnswMapping", totalFileSize);
 
             _headerAccessor = _mmf.CreateViewAccessor(0, _nodeOffset);
             _nodeAccessor = _mmf.CreateViewAccessor(_nodeOffset, (long)maxNodes * _nodeSize);
             _vectorAccessor = _mmf.CreateViewAccessor(_vectorOffset, (long)maxNodes * _vectorSize);
+            _neighborAccessor = _mmf.CreateViewAccessor(_neighborOffset, (long)maxNodes * 16 * sizeof(int));
+            _levelOffsetsAccessor = _mmf.CreateViewAccessor(_levelOffsetsOffset, (long)maxNodes * sizeof(int));
+            _levelCountsAccessor = _mmf.CreateViewAccessor(_levelCountsOffset, (long)maxNodes * sizeof(int));
+        }
+
+        // Save/load neighbor pool
+        public void SaveNeighborPool(int[] neighborPool, int count)
+        {
+            _neighborAccessor.WriteArray(0, neighborPool, 0, count);
+        }
+        public void LoadNeighborPool(int[] neighborPool, int count)
+        {
+            _neighborAccessor.ReadArray(0, neighborPool, 0, count);
+        }
+
+        // Save/load level offsets
+        public void SaveLevelOffsets(int[] levelOffsets, int count)
+        {
+            _levelOffsetsAccessor.WriteArray(0, levelOffsets, 0, count);
+        }
+        public void LoadLevelOffsets(int[] levelOffsets, int count)
+        {
+            _levelOffsetsAccessor.ReadArray(0, levelOffsets, 0, count);
+        }
+
+        // Save/load level counts
+        public void SaveLevelCounts(int[] levelCounts, int count)
+        {
+            _levelCountsAccessor.WriteArray(0, levelCounts, 0, count);
+        }
+        public void LoadLevelCounts(int[] levelCounts, int count)
+        {
+            _levelCountsAccessor.ReadArray(0, levelCounts, 0, count);
         }
 
         public (int maxNodes, int dimensions) GetheaderInfo()
@@ -85,7 +127,7 @@ namespace VectorDataBase.Persistence
         /// </summary>
         /// <param name="index"></param>
         /// <param name="node"></param>
-        public void SaveNode(int index,HnswNodeV3 node)
+        public void SaveNode(int index, HnswNodeV3 node)
         {
             long pos = (long)index * _nodeSize;
             _nodeAccessor.Write(pos, ref node);
@@ -119,7 +161,8 @@ namespace VectorDataBase.Persistence
             return node;
         }
 
-        public unsafe ReadOnlySpan<float> GetVectorSpan(int nodeId){
+        public unsafe ReadOnlySpan<float> GetVectorSpan(int nodeId)
+        {
             long offset = _vectorOffset + ((long)nodeId * _vectorSize);
             byte* ptr = null;
             _vectorAccessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
@@ -127,10 +170,14 @@ namespace VectorDataBase.Persistence
         }
 
 
-        public void Dispose() 
+        public void Dispose()
         {
             _headerAccessor?.Dispose();
             _nodeAccessor?.Dispose();
+            _vectorAccessor?.Dispose();
+            _neighborAccessor?.Dispose();
+            _levelOffsetsAccessor?.Dispose();
+            _levelCountsAccessor?.Dispose();
             _mmf?.Dispose();
         }
 

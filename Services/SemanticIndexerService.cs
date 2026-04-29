@@ -17,7 +17,6 @@ public class SemanticIndexerService
     private readonly object _indexLock = new();
     private int idGenerator = 0;
     private readonly Random _random = new Random();
-    private readonly HnswStorage _storage;
 
     // Priority extensions for "immediate" indexing
     private static readonly HashSet<string> HighPriorityExtensions = new(StringComparer.OrdinalIgnoreCase)

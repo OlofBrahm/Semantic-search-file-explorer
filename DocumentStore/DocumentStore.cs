@@ -67,7 +67,7 @@ namespace SimiliVec_Explorer.DocumentStorer
             connection.Open();
             var command = connection.CreateCommand();
             command.CommandText = @"SELECT COUNT(*) FROM Documents";
-            return Convert.ToInt32(command.ExecuteScalar()) == 1;
+            return Convert.ToInt32(command.ExecuteScalar()) > 0;
         }
 
 

@@ -36,13 +36,13 @@ public sealed class HnswIndexV3
 
     public int NodeCount => _nodeCount;
 
-    public HnswIndexV3(HnswStorage storage, int initialCapacity = 65536, bool loadFromStorage = false)
+    public HnswIndexV3(HnswStorage storage, int initialCapacity = 65536, bool hasData = false)
     {
         _storage = storage;
-        if (loadFromStorage)
+        var header = _storage.ReadHeader();
+        if (header.TotalNodes > 0 && hasData)
         {
-            var header = _storage.ReadHeader();
-            if (header.MagicNumber != unchecked((int)0xDEADBEEF))
+            if (header.MagicNumber != unchecked(0xDEADBEEF))
                 throw new InvalidDataException("Invalid or corrupt HNSW index file.");
             if (header.Version != 1)
                 throw new NotSupportedException("Unsupported index version.");
@@ -52,6 +52,29 @@ public sealed class HnswIndexV3
             _neighborPool = new int[header.TotalNodes * MaxNeighbours];
             _levelOffsetsPool = new int[header.TotalNodes];
             _levelCountsPool = new int[header.TotalNodes];
+
+            _nodeCount = header.TotalNodes;
+            _vectorDim = header.VectorDimension;
+            EntryPointId = header.EntryPointId;
+
+            // Load all nodes
+            for (int i = 0; i < _nodeCount; i++)
+            {
+                _nodes[i] = _storage.GetNode(i);
+            }
+            // Load all vectors
+            for (int i = 0; i < _nodeCount; i++)
+            {
+                var v = new float[_vectorDim];
+                var span = _storage.GetVectorSpan(i);
+                for (int j = 0; j < _vectorDim; j++)
+                    v[j] = span[j];
+                Array.Copy(v, 0, _vectorPool, i * _vectorDim, _vectorDim);
+            }
+            // Load neighbor/level arrays
+            _storage.LoadNeighborPool(_neighborPool, _nodeCount * MaxNeighbours);
+            _storage.LoadLevelOffsets(_levelOffsetsPool, _nodeCount);
+            _storage.LoadLevelCounts(_levelCountsPool, _nodeCount);
         }
         else
         {
@@ -130,7 +153,11 @@ public sealed class HnswIndexV3
 
             _storage?.SaveNode(nodeId, node);
             _storage?.SaveVector(nodeId, vector);
-            _storage.WriteHeader(new HnswHeader
+            // Save neighbor/level arrays after each insert
+            _storage?.SaveNeighborPool(_neighborPool, _nodeCount * MaxNeighbours);
+            _storage?.SaveLevelOffsets(_levelOffsetsPool, _nodeCount);
+            _storage?.SaveLevelCounts(_levelCountsPool, _nodeCount);
+            _storage?.WriteHeader(new HnswHeader
             {
                 MagicNumber = 0xDEADBEEF,
                 Version = 1,
@@ -292,6 +319,7 @@ public sealed class HnswIndexV3
             var (neighborOffset, neighborCount) = GetNeighborBlock(currentId, layer);
             for (int i = 0; i < neighborCount; i++)
             {
+                if (neighborOffset + i >= _neighborPool.Length) break; // Defensive: don't overrun
                 int neighborId = _neighborPool[neighborOffset + i];
                 if (neighborId < 0 || neighborId >= currentCount || visitedGen[neighborId] == 1) continue;
 
