@@ -5,7 +5,11 @@ using System.Diagnostics;
 using System.Text;
 using VectorDataBase.Indices;
 using VectorDataBase.Interfaces;
+using DocumentFormat.OpenXml.Packaging;
+using UglyToad.PdfPig;
 using System.Linq;
+using UglyToad.PdfPig.Graphics.Core;
+using System.Drawing;
 
 public class SemanticIndexerService
 {
@@ -21,7 +25,7 @@ public class SemanticIndexerService
     { ".md", ".txt", ".docx" };
 
     private static readonly HashSet<string> SearchableExtensions = new(StringComparer.OrdinalIgnoreCase)
-    { ".txt", ".md", ".docx", ".html", ".json", ".py", ".cs", ".xml" };
+    { ".txt", ".docx", ".cs", ".pdf" };
 
     public SemanticIndexerService(IEmbeddingModel model, HnswIndexV3 index, DocumentStore documentStore)
     {
@@ -39,7 +43,8 @@ public class SemanticIndexerService
         Console.WriteLine("Starting Rapid Discovery...");
 
         // 1. FAST DISCOVERY: Get all paths and prioritize them
-        var discoveryTask = Task.Run(() => {
+        var discoveryTask = Task.Run(() =>
+        {
             var sw = Stopwatch.StartNew();
             DiscoverFilesFast(rootPath, pathQueue);
             sw.Stop();
@@ -47,7 +52,8 @@ public class SemanticIndexerService
         });
 
         // 2. PARALLEL EXTRACTION: Multiple threads reading file contents
-        var extractionTask = Task.Run(() => {
+        var extractionTask = Task.Run(() =>
+        {
             var sw = Stopwatch.StartNew();
             ParallelExtractContent(pathQueue, contentQueue);
             sw.Stop();
@@ -112,11 +118,23 @@ public class SemanticIndexerService
                 // Commercial Logic: Don't read huge files entirely to start
                 var fileInfo = new System.IO.FileInfo(path);
                 if (fileInfo.Length > 10 * 1024 * 1024) return; // Skip files > 10MB for first-pass
-
+                //if pdf or docx use library to extract text
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 using var reader = new StreamReader(stream);
-
-                string content = reader.ReadToEnd();
+                string ext = Alphaleonis.Win32.Filesystem.Path.GetExtension(path);
+                string content;
+                if (ext == ".pdf")
+                {
+                    content = ReadPdfFiles(path);
+                }
+                else if(ext == ".docx" || ext == ".doc")
+                {
+                    content = ReadDocFiles(path);
+                }
+                else
+                {
+                    content = reader.ReadToEnd();
+                }
                 if (string.IsNullOrWhiteSpace(content) || IsBinaryContent(content)) return;
 
                 int id = Interlocked.Increment(ref idGenerator);
@@ -179,7 +197,7 @@ public class SemanticIndexerService
                 _index.Insert(vectors[i], batch[i].Id, _random);
             }
         }
-        
+
         Console.WriteLine($"[Timing] RunBatchToIndex for {batch.Count} docs took {sw.Elapsed.TotalMilliseconds} ms");
         sw.Stop();
     }
@@ -201,7 +219,37 @@ public class SemanticIndexerService
         int nonPrintable = content.Count(c => char.IsControl(c) && c != '\r' && c != '\n' && c != '\t');
         return (double)nonPrintable / Math.Max(content.Length, 1) > 0.1;
     }
+    //#section filereaders
+
+    public string ReadPdfFiles(string path)
+    {
+        using (var pdd = PdfDocument.Open(path))
+        {
+            StringBuilder text = new StringBuilder();
+            foreach (var page in pdd.GetPages())
+            {
+                text.Append(page.Text);
+            }
+            return text.ToString();
+        }
+    }
+
+    public string ReadDocFiles(string path)
+    {
+        using (var doc = WordprocessingDocument.Open(path, false))
+        {
+            if(doc.MainDocumentPart == null || doc.MainDocumentPart.Document == null || doc.MainDocumentPart.Document.Body == null)
+            {
+                Console.WriteLine($"[ReadDocFiles] Warning: Document structure is missing for file {path}");
+                return string.Empty;
+            }
+            Console.WriteLine($"Read a docx file Successfully read document {path}");
+            return doc.MainDocumentPart.Document.Body.InnerText;
+        }
+    }
 }
+
+
 
 public class FileContent
 {
