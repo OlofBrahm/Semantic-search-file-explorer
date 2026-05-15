@@ -1,4 +1,6 @@
 .vs/
+Storage/document_store.bin
+Storage/
 [Bb]in/
 [Oo]bj/
 [Dd]ebug/

@@ -19,7 +19,7 @@ namespace VectorDataBase.Services
         private int _nextId = 0;
         private DocumentStore _documentStore;
         private readonly StartupService _startupService;
-        private string _rootPath = @"C:\Users\olleb\Documents";
+        private string _rootPath = @"C:\Users\olleb\Downloads\20news-bydate\20news-bydate-test";
         private readonly HnswStorage _storage;
 
         public VectorService()

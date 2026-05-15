@@ -23,7 +23,7 @@ public class SemanticIndexerService
     { ".md", ".txt", ".docx" };
 
     private static readonly HashSet<string> SearchableExtensions = new(StringComparer.OrdinalIgnoreCase)
-    { ".txt", ".md", ".docx", ".html", ".json", ".py", ".cs", ".xml" };
+    { ".txt", ".docx", ".file" };
 
     public SemanticIndexerService(IEmbeddingModel model, HnswIndexV3 index, DocumentStore documentStore)
     {
@@ -108,6 +108,7 @@ public class SemanticIndexerService
         // Use 4-8 threads for extraction to saturate Disk IO while GPU works
         Parallel.ForEach(input.GetConsumingEnumerable(), new ParallelOptions { MaxDegreeOfParallelism = 8 }, path =>
         {
+            Console.WriteLine($"[DEBUG] Processing file: {path}");
             var swItem = Stopwatch.StartNew();
             try
             {
